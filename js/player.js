@@ -1,7 +1,7 @@
 // The player: a series and an episode, laid out by the director, filmed in bricks: each place built once, the cast
 // as minifigures, a camera that frames each shot (an establishing shot of the place, wide while people move, two-shots
 // from alternating sides, singles over the listener's shoulder, close-ups), a shallow depth of field like a macro
-// lens, subtitles, the voices and the score. ?s=neighbours&ep=ep1 (&t=12 to start at a moment, &fps=12 to animate
+// lens, subtitles, the voices and the score. Drag the picture to look round the scene yourself while it plays. ?s=neighbours&ep=ep1 (&t=12 to start at a moment, &fps=12 to animate
 // on twos like stop-motion).
 import * as THREE from '../lib/three.module.min.js';
 import { EffectComposer } from '../lib/addons/EffectComposer.js';
@@ -59,6 +59,7 @@ async function loadEpisode(id, autoplay) {
   bokeh = new BokehPass(scenes[T.scenes[0].set + '|' + T.scenes[0].tod], camera, { focus: 4, aperture: 0.004, maxblur: 0.008 }); comp.addPass(bokeh); comp.addPass(new OutputPass());
   resize();
   $('start').hidden = true; $('ui').hidden = false; $('loading').hidden = true; $('eptitle').textContent = EP.title[lang] || '';
+  const hn = $('hint'); hn.hidden = false; hn.style.opacity = 1; setTimeout(() => { hn.style.opacity = 0; }, 6000);
   if (autoplay) play(tNow);
   window.DONE = true;
 }
@@ -133,6 +134,49 @@ function camAt(t) {
   return { pos, look, fov };
 }
 
+// ---------------------------------------------------------------- the viewer's own camera
+// Drag to turn round the scene while it plays, wheel or pinch to come closer, double-click (or C) to give the camera
+// back to the director. It circles the middle of whoever is on stage, and follows them as they move.
+const free = { on: false, yaw: 0, pitch: 0.25, dist: 6, fov: 36, target: null, ptrs: new Map(), pinch: 0, last: 0 };
+function middleOf(t) { const xs = Object.values(T.actors).filter((a) => visible(a, t)).map((a) => V(xAt(a, t).x, 0.85, a.z || 0)); if (!xs.length) return V(STAGE_W / 2, 1, 0); return xs.reduce((m, v) => m.add(v), V(0, 0, 0)).divideScalar(xs.length); }
+function takeCam() { if (free.on) return; const off = camera.position.clone().sub(free.look || middleOf(tNow)); free.target = (free.look || middleOf(tNow)).clone(); free.dist = Math.max(1.5, off.length()); free.yaw = Math.atan2(off.x, off.z); free.pitch = Math.asin(Math.max(-0.99, Math.min(0.99, off.y / free.dist))); free.fov = camera.fov; free.on = true; $('cam').hidden = false; }
+const ray = new THREE.Raycaster(), ZERO = new THREE.Matrix4().makeScale(0, 0, 0), hidden = [];
+function unhide() { for (const [im, id, m] of hidden) { im.setMatrixAt(id, m); im.instanceMatrix.needsUpdate = true; } hidden.length = 0; }
+const figOf = (o) => { for (; o; o = o.parent) if (o.userData.fig || Object.values(figs).some((F) => F.root === o) || Object.values(props).includes(o)) return true; return false; };
+function giveBack() { unhide(); free.on = false; $('cam').hidden = true; }
+function freeCam(c, t) {
+  free.look = c.look;
+  if (!free.on) return c;
+  const now = performance.now(), dt = Math.min(0.1, (now - (free.last || now)) / 1000); free.last = now;
+  free.target.lerp(middleOf(t), 1 - Math.exp(-dt * 2.5)); // follow the people, gently
+  const cp = Math.cos(free.pitch), pos = free.target.clone().add(V(Math.sin(free.yaw) * cp, Math.sin(free.pitch), Math.cos(free.yaw) * cp).multiplyScalar(free.dist));
+  pos.y = Math.max(0.15, pos.y); // never under the baseplate
+  // bricks between the lens and the people are lifted out for the moment (a window cut through a tree or a wall);
+  // anything else in the way, the camera comes in front of
+  unhide(); const scene = sceneFor(sceneAt(t)), list = scene.children.filter((o) => !figOf(o));
+  for (const [ox, oy] of [[0, 0], [0, 0.5], [0, -0.6], [0.35, 0], [-0.35, 0]]) {
+    const aim = free.target.clone().add(V(ox * Math.cos(free.yaw), oy, -ox * Math.sin(free.yaw))), dir = pos.clone().sub(aim), len = dir.length(); dir.normalize(); ray.set(aim, dir); ray.far = len;
+    for (const h of ray.intersectObjects(list, true)) {
+      if (h.instanceId != null && h.object.isInstancedMesh) { const m = new THREE.Matrix4(); h.object.getMatrixAt(h.instanceId, m); hidden.push([h.object, h.instanceId, m]); h.object.setMatrixAt(h.instanceId, ZERO); h.object.instanceMatrix.needsUpdate = true; }
+      else if (ox === 0 && oy === 0 && h.distance > 0.4) { pos.copy(aim).addScaledVector(dir, Math.max(1.0, h.distance - 0.25)); break; }
+    }
+  }
+  return { pos, look: free.target.clone(), fov: free.fov };
+}
+{
+  const el = $('frame'), ok = (e) => !e.target.closest('#ui, #start, button, input');
+  el.addEventListener('pointerdown', (e) => { if (!T || !ok(e)) return; free.ptrs.set(e.pointerId, [e.clientX, e.clientY]); el.setPointerCapture(e.pointerId); takeCam(); if (free.ptrs.size === 2) { const [a, b] = [...free.ptrs.values()]; free.pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); } });
+  el.addEventListener('pointermove', (e) => {
+    const p = free.ptrs.get(e.pointerId); if (!p) return; const dx = e.clientX - p[0], dy = e.clientY - p[1]; free.ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (free.ptrs.size === 1) { free.yaw -= dx * 0.008; free.pitch = Math.max(-0.05, Math.min(1.4, free.pitch + dy * 0.006)); }
+    else if (free.ptrs.size === 2) { const [a, b] = [...free.ptrs.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]); if (free.pinch) free.dist = Math.max(1.2, Math.min(24, free.dist * free.pinch / d)); free.pinch = d; }
+  });
+  const up = (e) => { free.ptrs.delete(e.pointerId); free.pinch = 0; };
+  el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  el.addEventListener('wheel', (e) => { if (!T || !ok(e) || $('ui').hidden) return; e.preventDefault(); takeCam(); free.dist = Math.max(1.2, Math.min(24, free.dist * Math.exp(e.deltaY * 0.0012))); }, { passive: false });
+  el.addEventListener('dblclick', (e) => { if (ok(e)) giveBack(); });
+}
+
 // ---------------------------------------------------------------- one moment
 function draw(t) {
   posed.clear();
@@ -156,7 +200,7 @@ function draw(t) {
     if (s.string) { if (!str) { str = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#ffffff' })); str.name = 'string-' + id; scene.add(str); } const a = V(s.string.x, s.string.y, s.string.z), b = V(s.x, s.y - 0.3, s.z), m = a.clone().lerp(b, 0.5).add(V(0, -0.4, 0)); str.geometry.setFromPoints(new THREE.QuadraticBezierCurve3(a, m, b).getPoints(24)); str.visible = true; } else if (str) str.visible = false;
   }
   // the camera, and the lens focused on whoever the shot is about
-  const c = camAt(t); camera.position.copy(c.pos); camera.lookAt(c.look); camera.fov = c.fov; camera.updateProjectionMatrix();
+  const c = freeCam(camAt(t), t); camera.position.copy(c.pos); camera.lookAt(c.look); camera.fov = c.fov; camera.updateProjectionMatrix();
   comp.passes[0].scene = scene; bokeh.scene = scene; bokeh.uniforms.focus.value = c.pos.distanceTo(c.look);
   bokeh.uniforms.aperture.value = 0.0045 * Math.min(1.6, 3 / Math.max(1.2, c.pos.distanceTo(c.look)));
   comp.render();
@@ -175,13 +219,14 @@ $('pp').onclick = () => (playing ? pause() : play(tNow >= T.len - 0.1 ? 0 : tNow
 $('bar').oninput = (e) => seek(+e.target.value * T.len);
 $('lang').onclick = () => { lang = lang === 'zh' ? 'en' : 'zh'; $('lang').textContent = lang === 'zh' ? 'EN' : '中'; if (EP) $('eptitle').textContent = EP.title[lang]; startScreen(); };
 $('fs').onclick = () => (document.fullscreenElement ? document.exitFullscreen() : $('frame').requestFullscreen());
-$('home').onclick = () => { pause(); $('ui').hidden = true; $('start').hidden = false; $('start').classList.remove('loading'); };
-document.addEventListener('keydown', (e) => { if (!T || $('ui').hidden) return; if (e.code === 'Space') { e.preventDefault(); $('pp').click(); } if (e.code === 'ArrowRight') seek(tNow + 5); if (e.code === 'ArrowLeft') seek(tNow - 5); });
+$('home').onclick = () => { pause(); giveBack(); $('ui').hidden = true; $('start').hidden = false; $('start').classList.remove('loading'); };
+document.addEventListener('keydown', (e) => { if (!T || $('ui').hidden) return; if (e.code === 'KeyC') (free.on ? giveBack() : takeCam()); if (e.code === 'Space') { e.preventDefault(); $('pp').click(); } if (e.code === 'ArrowRight') seek(tNow + 5); if (e.code === 'ArrowLeft') seek(tNow - 5); });
 function loop() {
   if (T && comp) { if (playing) { tNow = tStart + (player.ctx.currentTime - t0Wall); if (tNow >= T.len) { tNow = T.len; pause(); } } draw(tNow); $('bar').value = tNow / T.len; $('time').textContent = `${fmt(tNow)} / ${fmt(T.len)}`; }
   requestAnimationFrame(loop);
 }
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 startScreen(); requestAnimationFrame(loop);
-window.APP = { frame: (t) => { tNow = t; draw(t); }, get T() { return T; } };
+window.APP = { frame: (t) => { tNow = t; draw(t); }, get T() { return T; }, free, takeCam, giveBack };
+$('cam').onclick = giveBack;
 if (q.get('ep')) loadEpisode(q.get('ep'), false); else window.DONE = true;

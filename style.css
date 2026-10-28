@@ -22,3 +22,7 @@ html, body { margin: 0; height: 100%; background: #16121c; color: #fff; font-fam
 #time, #eptitle { font-size: 13px; white-space: nowrap; opacity: .9; }
 @media (hover: none) { #ui { opacity: 1; } }
 #fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+#frame { touch-action: none; cursor: grab; }
+#frame:active { cursor: grabbing; }
+#cam { position: absolute; top: 12px; left: 12px; border: 0; border-radius: 10px; padding: 7px 12px; background: rgba(20,16,28,.65); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+#hint { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 10px; background: rgba(20,16,28,.6); color: #fff; font-size: 14px; pointer-events: none; transition: opacity .8s; }
